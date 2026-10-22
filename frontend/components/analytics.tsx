@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowUpRight, Braces, CircleHelp, Clock3, LoaderCircle, Play, Sparkles, Table2, WandSparkles } from "lucide-react";
+import { AlertCircle, ArrowUpRight, Braces, CircleHelp, Clock3, LoaderCircle, Play, Sparkles, Table2, WandSparkles } from "lucide-react";
 import type { Dataset, QueryResult } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -35,6 +35,19 @@ export function SQLDisplay({ result }: { result: QueryResult }) {
   </Card>;
 }
 
+export function QuerySummary({ result }: { result: QueryResult }) {
+  return <Card className="border-[#dcebe2] bg-[#f8fbf9]">
+    <CardContent className="flex items-start gap-3 pt-5">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#eaf5ef] text-[#278064]"><Sparkles size={17} /></span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2"><CardTitle>AI summary</CardTitle><span className={`rounded-full px-2 py-0.5 text-[9px] font-medium ${result.summary_mode === "ai" ? "bg-[#e7f2ec] text-[#358165]" : "bg-[#f0f2f1] text-[#758078]"}`}>{result.summary_mode === "ai" ? "AI generated" : "Results summary"}</span></div>
+        <p className="mt-2 text-xs leading-5 text-[#4f5f55]">{result.summary}</p>
+        {result.summary_note && <p role="status" className="mt-2 flex items-start gap-1.5 text-[10px] leading-4 text-[#9a7440]"><AlertCircle size={12} className="mt-0.5 shrink-0" />{result.summary_note}</p>}
+      </div>
+    </CardContent>
+  </Card>;
+}
+
 export function ResultsDisplay({ result }: { result: QueryResult }) {
   return <Card>
     <CardHeader><div><CardTitle>Query results</CardTitle><p className="mt-1 text-xs text-[#8a9590]">Showing {result.row_count} {result.row_count === 1 ? "row" : "rows"} from {result.table}.</p></div><span className="flex items-center gap-1 rounded-md bg-[#eaf5ef] px-2 py-1 text-[9px] font-medium text-[#278064]"><Clock3 size={11} /> Ready</span></CardHeader>
@@ -58,6 +71,6 @@ export function AnalyticsPage({ datasets, onQuery }: { datasets: Dataset[]; onQu
     <div className="welcome-row"><div><div className="eyebrow">DISCOVER <span className="text-[#ccd3ce]">/</span> AI ANALYTICS</div><h1>Talk to your data<span className="text-[#27906e]">.</span></h1><p>Turn a question into a useful first step, without writing SQL.</p></div><div className="hidden items-center gap-2 rounded-lg bg-[#f0ebfa] px-3 py-2 text-[10px] font-medium text-[#8168b5] sm:flex"><Sparkles size={14} /> Natural language analytics</div></div>
     <QueryInput value={question} onChange={setQuestion} onSubmit={runQuery} loading={loading} table={table} tables={datasets} onTableChange={setTable} />
     {error && <div role="alert" className="rounded-lg bg-[#fff2ee] px-4 py-3 text-xs text-[#b3533c]">{error}</div>}
-    {result ? <div className="grid grid-cols-1 gap-4 xl:grid-cols-[.9fr_1.1fr]"><SQLDisplay result={result} /><ResultsDisplay result={result} /></div> : <Card className="border-dashed bg-[#fcfdfc]"><CardContent className="flex flex-col items-center py-10 text-center"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#f0ebfa] text-[#8168b5]"><Table2 size={19} /></span><p className="mt-3 text-xs font-semibold text-[#536158]">Your answer will appear here</p><p className="mt-1 max-w-sm text-[10px] leading-5 text-[#929c96]">Choose a data source and ask a question. Results are based on tables already available in your workspace.</p><span className="mt-3 inline-flex items-center gap-1 text-[10px] text-[#9587b6]"><ArrowUpRight size={12} /> Start with a suggested question above.</span></CardContent></Card>}
+    {result ? <><QuerySummary result={result} /><div className="grid grid-cols-1 gap-4 xl:grid-cols-[.9fr_1.1fr]"><SQLDisplay result={result} /><ResultsDisplay result={result} /></div></> : <Card className="border-dashed bg-[#fcfdfc]"><CardContent className="flex flex-col items-center py-10 text-center"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#f0ebfa] text-[#8168b5]"><Table2 size={19} /></span><p className="mt-3 text-xs font-semibold text-[#536158]">Your answer will appear here</p><p className="mt-1 max-w-sm text-[10px] leading-5 text-[#929c96]">Choose a data source and ask a question. Results are based on tables already available in your workspace.</p><span className="mt-3 inline-flex items-center gap-1 text-[10px] text-[#9587b6]"><ArrowUpRight size={12} /> Start with a suggested question above.</span></CardContent></Card>}
   </div>;
 }

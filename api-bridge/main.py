@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 import os
 import re
 import sqlite3
@@ -14,12 +15,15 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = ROOT / "backend"
+load_dotenv(ROOT / ".env")
+
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_UPLOAD_ROWS = 100_000
 
@@ -138,9 +142,13 @@ def _backend_storage_enabled() -> bool:
     return os.getenv("DATA_SENTIENT_STORAGE", "local").lower() == "snowflake"
 
 
-def _ingest_with_backend(path: str) -> str:
+def _ensure_backend_importable() -> None:
     if str(BACKEND_DIR) not in sys.path:
         sys.path.insert(0, str(BACKEND_DIR))
+
+
+def _ingest_with_backend(path: str) -> str:
+    _ensure_backend_importable()
     from agent_ingest import ingest_csv
 
     result = ingest_csv(path, use_agent=False)
@@ -150,8 +158,7 @@ def _ingest_with_backend(path: str) -> str:
 
 
 def _process_with_backend(table: str) -> None:
-    if str(BACKEND_DIR) not in sys.path:
-        sys.path.insert(0, str(BACKEND_DIR))
+    _ensure_backend_importable()
     from curated_agent import load_raw_to_curated
 
     load_raw_to_curated(table, use_agent=False)
@@ -161,16 +168,46 @@ def _preview(frame: pd.DataFrame, limit: int = 8) -> list[dict[str, Any]]:
     return frame.head(limit).astype(object).where(pd.notna(frame.head(limit)), None).to_dict("records")
 
 
-def _model_sql(question: str, item: Dataset) -> str:
+def _configured_ai_client() -> tuple[str, Any, str] | None:
     from openai import OpenAI
 
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    provider_setting = os.getenv("AI_PROVIDER", "auto").strip().lower()
+    if provider_setting == "auto":
+        if os.getenv("GEMINI_API_KEY"):
+            provider = "gemini"
+        elif os.getenv("OPENAI_API_KEY"):
+            provider = "openai"
+        else:
+            return None
+    elif provider_setting in {"gemini", "openai"}:
+        provider = provider_setting
+    else:
+        raise ValueError("AI_PROVIDER must be 'auto', 'gemini', or 'openai'.")
+
+    key_name = "GEMINI_API_KEY" if provider == "gemini" else "OPENAI_API_KEY"
+    api_key = os.getenv(key_name)
+    if not api_key:
+        raise ValueError(f"{key_name} must be set when AI_PROVIDER={provider}.")
+
+    if provider == "gemini":
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+        model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    else:
+        client = OpenAI(api_key=api_key)
+        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    return provider, client, model
+
+
+def _model_sql(question: str, item: Dataset, client: Any, model: str) -> str:
     schema = [
         {"name": str(column), "type": str(dtype)}
         for column, dtype in item.frame.dtypes.items()
     ]
     response = client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        model=model,
         temperature=0,
         messages=[
             {
@@ -191,6 +228,81 @@ def _model_sql(question: str, item: Dataset) -> str:
     if not sql:
         raise ValueError("The AI provider returned an empty SQL query.")
     return sql.strip().removeprefix("```sql").removesuffix("```").strip()
+
+
+def _summarize_query(
+    question: str,
+    sql: str,
+    table: str,
+    columns: list[str],
+    rows: list[dict[str, Any]],
+    client: Any,
+    model: str,
+) -> str:
+    from openai import APIError
+
+    sample_rows = [
+        {
+            str(column): str(value)[:300] if value is not None else None
+            for column, value in row.items()
+        }
+        for row in rows[:20]
+    ]
+    context = {
+        "question": question,
+        "table": table,
+        "sql": sql,
+        "returned_row_count": len(rows),
+        "columns": columns,
+        "sample_results": sample_rows,
+    }
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            temperature=0.2,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Summarize this data query result for a business user in 1-3 "
+                        "short sentences. State what the result shows, use only supplied "
+                        "facts, and do not infer causation or claim the sample is the full "
+                        "result. Do not repeat personal contact details."
+                    ),
+                },
+                {"role": "user", "content": json.dumps(context, default=str)},
+            ],
+        )
+    except APIError as error:
+        raise RuntimeError(f"AI summary unavailable: {error}") from error
+
+    summary = response.choices[0].message.content
+    if not summary or not summary.strip():
+        raise ValueError("The AI provider returned an empty summary.")
+    return summary.strip()
+
+
+def _local_query_summary(
+    question: str,
+    table: str,
+    columns: list[str],
+    rows: list[dict[str, Any]],
+) -> str:
+    if not rows:
+        return f'Your question about {table} returned no matching rows.'
+    if len(rows) == 1 and len(columns) == 1:
+        value = rows[0].get(columns[0])
+        return f"{columns[0].replace('_', ' ').title()}: {value}."
+    if len(rows) == 1:
+        values = ", ".join(
+            f"{column.replace('_', ' ').title()}: {rows[0].get(column)}"
+            for column in columns[:4]
+        )
+        return f"Your question about {table} returned one result: {values}."
+    return (
+        f'Your question about {table} returned {len(rows)} rows across '
+        f'{len(columns)} columns. The results table below shows the matching data.'
+    )
 
 
 def _run_read_only_sql(sql: str, item: Dataset) -> tuple[list[str], list[dict[str, Any]]]:
@@ -247,10 +359,16 @@ def _quality(frame: pd.DataFrame) -> dict[str, Any]:
 
 
 def _ai_file_recommendations(frame: pd.DataFrame) -> tuple[list[str] | None, str | None]:
-    if not os.getenv("OPENAI_API_KEY"):
+    try:
+        ai_config = _configured_ai_client()
+    except ValueError as error:
+        return None, str(error)
+    if ai_config is None:
         return None, None
 
-    from openai import APIError, OpenAI
+    from openai import APIError
+
+    _provider, client, model = ai_config
 
     summary = {
         "rows": len(frame),
@@ -265,8 +383,8 @@ def _ai_file_recommendations(frame: pd.DataFrame) -> tuple[list[str] | None, str
         "duplicate_rows": int(frame.duplicated().sum()),
     }
     try:
-        response = OpenAI().chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        response = client.chat.completions.create(
+            model=model,
             temperature=0,
             messages=[
                 {
@@ -312,7 +430,10 @@ def _dataset_summary(item: Dataset) -> dict[str, Any]:
 
 @app.get("/api/health")
 async def health() -> dict[str, str]:
-    return {"status": "healthy", "storage": "snowflake" if _backend_storage_enabled() else "local"}
+    return {
+        "status": "healthy",
+        "storage": "snowflake" if _backend_storage_enabled() else "local",
+    }
 
 
 @app.get("/api/dashboard")
@@ -405,18 +526,14 @@ async def ingest(file: UploadFile = File(...)) -> dict[str, Any]:
         raise
 
     if _backend_storage_enabled():
-        temporary_path: str | None = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as temporary_file:
-                temporary_file.write(contents)
-                temporary_path = temporary_file.name
-            await asyncio.to_thread(_ingest_with_backend, temporary_path)
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                temporary_path = Path(temporary_directory) / filename
+                temporary_path.write_bytes(contents)
+                await asyncio.to_thread(_ingest_with_backend, str(temporary_path))
         except Exception as error:
             _record_event(filename, f"RAW.{table}", "FAILED", 0, "Snowflake ingestion failed")
             raise HTTPException(status_code=502, detail=f"Snowflake ingestion failed: {error}") from error
-        finally:
-            if temporary_path and os.path.exists(temporary_path):
-                os.unlink(temporary_path)
 
     item = Dataset(table, frame, filename)
     datasets[table] = item
@@ -485,6 +602,7 @@ async def process(table: str) -> dict[str, Any]:
 async def query(request: QueryRequest) -> dict[str, Any]:
     _seed_demo_data()
     if _backend_storage_enabled():
+        _ensure_backend_importable()
         from security_utils import validate_user_input
 
         try:
@@ -500,13 +618,39 @@ async def query(request: QueryRequest) -> dict[str, Any]:
     if item is None:
         item = next(iter(datasets.values()))
 
-    if os.getenv("OPENAI_API_KEY"):
+    try:
+        ai_config = _configured_ai_client()
+    except ValueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    if ai_config:
+        provider, client, model = ai_config
         try:
-            sql = await asyncio.to_thread(_model_sql, question, item)
+            sql = await asyncio.to_thread(_model_sql, question, item, client, model)
             columns, rows = _run_read_only_sql(sql, item)
         except Exception as error:
             raise HTTPException(status_code=502, detail=f"AI query failed: {error}") from error
-        note = "AI-generated SQL was executed as a read-only query against this dataset."
+        try:
+            summary = await asyncio.to_thread(
+                _summarize_query,
+                question,
+                sql,
+                item.name,
+                columns,
+                rows,
+                client,
+                model,
+            )
+            summary_mode = "ai"
+            summary_note = None
+        except (RuntimeError, ValueError) as error:
+            summary = _local_query_summary(question, item.name, columns, rows)
+            summary_mode = "local"
+            summary_note = str(error)
+        note = (
+            f"AI-generated SQL ({provider}) was executed as a read-only query "
+            "against this dataset."
+        )
     else:
         frame = item.frame
         question_lower = question.lower()
@@ -527,7 +671,13 @@ async def query(request: QueryRequest) -> dict[str, Any]:
             sql = f"SELECT * FROM {item.name} LIMIT 10"
         columns = [str(column) for column in result_frame.columns]
         rows = _preview(result_frame, 10)
-        note = "Using the built-in query templates. Add OPENAI_API_KEY to enable model-generated SQL."
+        summary = _local_query_summary(question, item.name, columns, rows)
+        summary_mode = "local"
+        summary_note = "AI summary unavailable; showing a summary generated from the returned results."
+        note = (
+            "Using built-in query templates. Set GEMINI_API_KEY or OPENAI_API_KEY "
+            "to enable model-generated SQL."
+        )
 
     return {
         "question": question,
@@ -536,6 +686,9 @@ async def query(request: QueryRequest) -> dict[str, Any]:
         "row_count": len(rows),
         "columns": columns,
         "rows": rows,
+        "summary": summary,
+        "summary_mode": summary_mode,
+        "summary_note": summary_note,
         "note": note,
     }
 

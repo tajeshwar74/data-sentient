@@ -85,6 +85,9 @@ export type QueryResult = {
   row_count: number;
   columns: string[];
   rows: Record<string, unknown>[];
+  summary: string;
+  summary_mode: "ai" | "local";
+  summary_note: string | null;
   note: string;
 };
 
