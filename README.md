@@ -2,6 +2,13 @@
 
 Data Sentient is a data pipeline workspace with a Next.js frontend and a FastAPI bridge. It supports CSV inspection, RAW-to-CURATED processing, natural-language analytics, dashboard monitoring, and audit export.
 
+<img width="800"  alt="Screenshot 2026-10-22 at 1 57 52 PM" src="https://github.com/user-attachments/assets/400b33ce-d411-4c98-9ed2-556aafca3136" />
+<img width="800" alt="Screenshot 2026-10-22 at 1 57 44 PM" src="https://github.com/user-attachments/assets/48b700b7-3d12-4e16-8d72-4285e8e386b9" />
+<img width="800" alt="Screenshot 2026-10-22 at 1 56 10 PM" src="https://github.com/user-attachments/assets/4ee0a350-0b26-4e31-858e-75fc6aa17c14" />
+<img width="800" alt="Screenshot 2026-10-22 at 1 56 08 PM" src="https://github.com/user-attachments/assets/29de1b34-f027-479c-9fb6-405ecead9853" />
+<img width="800" alt="Screenshot 2026-10-22 at 1 55 59 PM" src="https://github.com/user-attachments/assets/99d61162-7955-4151-b750-b16de07bc44a" />
+
+
 ## Run locally
 
 ### API bridge
